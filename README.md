@@ -2,6 +2,17 @@
 A complete software package for FSR dance pads.  
 Join the ![Discord](https://img.shields.io/discord/778312862425939998?color=5865F2&label=Discord&logo=discord&logoColor=white) for any questions/suggestions
 
+This GIT intended to use with L-Tek with modify 4 in-active sensor using analog pad.
+
+A0 - Digital
+A1 - Digital
+A2 - Digital
+A3 - Digital
+A4 - Analog
+A5 - Analog
+A6 - Analog
+A7 - Analog
+
 ## Features
 - React web UI to customize sensitivity 
 - Profiles & persistence
