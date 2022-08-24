@@ -1,4 +1,6 @@
 #include <inttypes.h>
+#include "HID-Project.h"
+#define GAMEPAD 1
 
 #if !defined(__AVR_ATmega32U4__) && !defined(__AVR_ATmega328P__) && \
     !defined(__AVR_ATmega1280__) && !defined(__AVR_ATmega2560__)
@@ -10,21 +12,26 @@
   #define SET_BIT(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
 #endif
 
+#define ANALOG_RESOLUTION_12BIT     1
+#ifndef ANALOG_RESOLUTION_12BIT
+  #define ANALOG_RESOLUTION     1023
+#else
+  #define ANALOG_RESOLUTION     4095
+#endif
 
-#ifdef CORE_TEENSY
-  // Use the Joystick library for Teensy
+#ifdef GAMEPAD
+  // Use the Joystick library
   void ButtonStart() {
-    // Use Joystick.begin() for everything that's not Teensy 2.0.
-    #ifndef __AVR_ATmega32U4__
-      Joystick.begin();
-    #endif
-    Joystick.useManualSend(true);
+      Gamepad.begin();
   }
   void ButtonPress(uint8_t button_num) {
-    Joystick.button(button_num, 1);
+    Gamepad.press(button_num);
   }
   void ButtonRelease(uint8_t button_num) {
-    Joystick.button(button_num, 0);
+    Gamepad.release(button_num);
+  }
+  void ButtonSendNow(void) {
+    Gamepad.write();
   }
 #else
   #include <Keyboard.h>
@@ -38,10 +45,12 @@
   void ButtonRelease(uint8_t button_num) {
     Keyboard.release('a' + button_num - 1);
   }
+  void ButtonSendNow(void) {
+  }
 #endif
 
 // Default threshold value for each of the sensors.
-const int16_t kDefaultThreshold = 1000;
+const int16_t kDefaultThreshold = 3*1024;
 // Max window size for both of the moving averages classes.
 const size_t kWindowSize = 50;
 // Baud rate used for Serial communication. Technically ignored by Teensys.
@@ -53,6 +62,13 @@ const size_t kMaxSharedSensors = 2;
 // Button numbers should start with 1 (Button0 is not a valid Joystick input).
 // Automatically incremented when creating a new SensorState.
 uint8_t curButtonNum = 1;
+
+// Timestamps are always "unsigned long" regardless of board type So don't need
+// to explicitly worry about the widths.
+unsigned long lastSend = 0;
+// loopTime is used to estimate how long it takes to run one iteration of
+// loop().
+long loopTime = -1;
 
 /*===========================================================================*/
 
@@ -308,14 +324,18 @@ class SensorState {
 // Class containing all relevant information per sensor.
 class Sensor {
  public:
-  Sensor(uint8_t pin_value, SensorState* sensor_state = nullptr)
-      : initialized_(false), pin_value_(pin_value),
+  Sensor(uint8_t pin_value, SensorState* sensor_state = nullptr, uint8_t pin_Digital = false)
+      : initialized_(false), pin_value_(pin_value), analog_(pin_Digital ? false : true),
         user_threshold_(kDefaultThreshold),
         #if defined(CAN_AVERAGE)
           moving_average_(kWindowSize),
         #endif
         offset_(0), sensor_state_(sensor_state),
-        should_delete_state_(false) {}
+        should_delete_state_(false) {
+          if (!analog_) {
+            pinMode(pin_value_, INPUT_PULLUP);
+          }
+        }
   
   ~Sensor() {
     if (should_delete_state_) {
@@ -363,12 +383,17 @@ class Sensor {
       return;
     }
 
-    int16_t sensor_value = analogRead(pin_value_);
+    int16_t sensor_value;
+    
+    if (analog_)
+      sensor_value = analogRead(pin_value_);
+    else
+      sensor_value = digitalRead(pin_value_) ? 0 : ANALOG_RESOLUTION;
 
     #if defined(CAN_AVERAGE)
       // Fetch the updated Weighted Moving Average.
       cur_value_ = moving_average_.GetAverage(sensor_value) - offset_;
-      cur_value_ = constrain(cur_value_, 0, 1023);
+      cur_value_ = constrain(cur_value_, 0, ANALOG_RESOLUTION);
     #else
       // Don't use averaging for Arduino Leonardo, Uno, Mega1280, and Mega2560
       // since averaging seems to be broken with it. This should also include
@@ -435,6 +460,7 @@ class Sensor {
 
   // A unique number corresponding to this sensor. Set during Init().
   uint8_t sensor_id_;
+  uint8_t analog_;
 };
 
 /*===========================================================================*/
@@ -457,10 +483,14 @@ class Sensor {
 // };
 
 Sensor kSensors[] = {
-  Sensor(A0),
-  Sensor(A1),
-  Sensor(A2),
-  Sensor(A3),
+  Sensor(A0, NULL, true),
+  Sensor(A1, NULL, true),
+  Sensor(A2, NULL, true),
+  Sensor(A3, NULL, true),
+  Sensor(A4),
+  Sensor(A5),
+  Sensor(A6),
+  Sensor(A7),
 };
 const size_t kNumSensors = sizeof(kSensors)/sizeof(Sensor);
 
@@ -469,12 +499,12 @@ const size_t kNumSensors = sizeof(kSensors)/sizeof(Sensor);
 class SerialProcessor {
  public:
    void Init(long baud_rate) {
-    Serial.begin(baud_rate);
+    SerialUSB.begin(baud_rate);
   }
 
   void CheckAndMaybeProcessData() {
-    while (Serial.available() > 0) {
-      size_t bytes_read = Serial.readBytesUntil(
+    while (SerialUSB.available() > 0) {
+      size_t bytes_read = SerialUSB.readBytesUntil(
           '\n', buffer_, kBufferSize - 1);
       buffer_[bytes_read] = '\0';
 
@@ -514,7 +544,7 @@ class SerialProcessor {
     if (sensor_index >= kNumSensors) { return; }
 
     int16_t sensor_threshold = strtol(next, nullptr, 10);
-    if (sensor_threshold < 0 || sensor_threshold > 1023) { return; }
+    if (sensor_threshold < 0 || sensor_threshold > ANALOG_RESOLUTION) { return; }
 
     kSensors[sensor_index].UpdateThreshold(sensor_threshold);
     PrintThresholds();
@@ -527,21 +557,24 @@ class SerialProcessor {
   }
 
   void PrintValues() {
-    Serial.print("v");
+    SerialUSB.print("v");
     for (size_t i = 0; i < kNumSensors; ++i) {
-      Serial.print(" ");
-      Serial.print(kSensors[i].GetCurValue());
+      SerialUSB.print(" ");
+      SerialUSB.print(kSensors[i].GetCurValue());
     }
-    Serial.print("\n");
+    SerialUSB.print("\n");
   }
 
   void PrintThresholds() {
-    Serial.print("t");
+    SerialUSB.print("t");
     for (size_t i = 0; i < kNumSensors; ++i) {
-      Serial.print(" ");
-      Serial.print(kSensors[i].GetThreshold());
+      SerialUSB.print(" ");
+      SerialUSB.print(kSensors[i].GetThreshold());
     }
-    Serial.print("\n");
+    SerialUSB.print("\n");
+    SerialUSB.print("Loop Time (us):");
+    SerialUSB.print(loopTime);
+    SerialUSB.print("\n");
   }
 
  private:
@@ -552,15 +585,22 @@ class SerialProcessor {
 /*===========================================================================*/
 
 SerialProcessor serialProcessor;
-// Timestamps are always "unsigned long" regardless of board type So don't need
-// to explicitly worry about the widths.
-unsigned long lastSend = 0;
-// loopTime is used to estimate how long it takes to run one iteration of
-// loop().
-long loopTime = -1;
+
+void analogReadCorrection (int offset, uint16_t gain)
+{
+  // Set correction values
+  ADC->OFFSETCORR.reg = ADC_OFFSETCORR_OFFSETCORR(offset);
+  ADC->GAINCORR.reg = ADC_GAINCORR_GAINCORR(gain);
+
+  // Enable digital correction logic
+  ADC->CTRLB.bit.CORREN = 1;
+  while(ADC->STATUS.bit.SYNCBUSY);
+}
 
 void setup() {
   serialProcessor.Init(kBaudRate);
+  analogReadResolution(12);
+  analogReadCorrection(15, 2056);
   ButtonStart();
   for (size_t i = 0; i < kNumSensors; ++i) {
     // Button numbers should start with 1.
@@ -576,7 +616,7 @@ void setup() {
 	  CLEAR_BIT(ADCSRA, ADPS0);
   #endif
 }
-
+ 
 void loop() {
   unsigned long startMicros = micros();
   // We only want to send over USB every millisecond, but we still want to
@@ -596,9 +636,7 @@ void loop() {
 
   if (willSend) {
     lastSend = startMicros;
-    #ifdef CORE_TEENSY
-        Joystick.send_now();
-    #endif
+    ButtonSendNow();
   }
 
   if (loopTime == -1) {
