@@ -10,8 +10,8 @@ A2 - Digital
 A3 - Digital
 A4 - Analog
 A5 - Analog
-A6 - Analog
-A7 - Analog
+
+Please note that you need to use https://github.com/NicoHood/HID library for the Seeed XIAO board.
 
 ## Features
 - React web UI to customize sensitivity 
