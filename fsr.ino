@@ -50,7 +50,7 @@
 #endif
 
 // Default threshold value for each of the sensors.
-const int16_t kDefaultThreshold = 3*1024;
+const int16_t kDefaultThreshold = 1024;
 // Max window size for both of the moving averages classes.
 const size_t kWindowSize = 50;
 // Baud rate used for Serial communication. Technically ignored by Teensys.
@@ -483,14 +483,12 @@ class Sensor {
 // };
 
 Sensor kSensors[] = {
-  Sensor(A0, NULL, true),
-  Sensor(A1, NULL, true),
-  Sensor(A2, NULL, true),
-  Sensor(A3, NULL, true),
-  Sensor(A4),
-  Sensor(A5),
-  Sensor(A6),
-  Sensor(A7),
+  Sensor(A0, NULL, true), /* Pad - Left */
+  Sensor(A1, NULL, true), /* Pad - Right */
+  Sensor(A2, NULL, true), /* Pad - Up */
+  Sensor(A3, NULL, true), /* Pad - Down */
+  Sensor(A4),             /* Pad - Start */
+  Sensor(A5),             /* Pad - Select */
 };
 const size_t kNumSensors = sizeof(kSensors)/sizeof(Sensor);
 
